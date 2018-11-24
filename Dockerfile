@@ -1,51 +1,69 @@
-FROM ubuntu:14.04
+# Ubuntu and Bitcoin Core versions
+FROM ubuntu:18.04
+ENV BITCOIN_CORE_VER=0.17.0.1
 
-MAINTAINER Alex Foster version: 0.1
+# Install basic tools
+RUN apt-get update && apt-get install -y \
+	git \
+	wget \
+	build-essential \
+	&& rm -rf /var/lib/apt/lists/*
 
-ENV BTCVERSION=0.14.2
+# Download Bitcoin Core
+RUN git clone --progress --verbose https://github.com/bitcoin/bitcoin.git
 
-ENV BTCPREFIX=/bitcoin/depends/x86_64-pc-linux-gnu
-
-RUN apt-get update && apt-get install -y git build-essential wget pkg-config curl libtool autotools-dev automake libssl-dev libevent-dev bsdmainutils libboost-system-dev libboost-filesystem-dev libboost-chrono-dev libboost-program-options-dev libboost-test-dev libboost-thread-dev
-
+# Run script to install libdb4.8 (Berkeley DB)
 WORKDIR /
+RUN ./bitcoin/contrib/install_db4.sh .
+RUN rm db-4.8.30.NC.tar.gz
+ENV BDB_PREFIX=/db4
 
-RUN mkdir -p /berkeleydb && git clone https://github.com/bitcoin/bitcoin.git
+# Install dependencies for cross-compile
+RUN apt-get update && apt-get install -y \
+	curl \
+	libtool \
+	autotools-dev \
+	automake \
+        pkg-config \
+	bsdmainutils \
+	python3 \
+	libssl-dev \
+	libevent-dev \
+        libboost-all-dev \
+	libminiupnpc-dev \
+	libzmq3-dev \
+	libprotobuf-dev \
+	protobuf-compiler \
+	doxygen \
+	&& rm -rf /var/lib/apt/lists/*
 
-WORKDIR /berkeleydb
-
-RUN wget http://download.oracle.com/berkeley-db/db-4.8.30.NC.tar.gz && tar -xvf db-4.8.30.NC.tar.gz && rm db-4.8.30.NC.tar.gz && mkdir -p db-4.8.30.NC/build_unix/build
-
-ENV BDB_PREFIX=/berkeleydb/db-4.8.30.NC/build_unix/build
-
-WORKDIR /berkeleydb/db-4.8.30.NC/build_unix
-
-RUN ../dist/configure --disable-shared --enable-cxx --with-pic --prefix=$BDB_PREFIX
-
-RUN make install
-
-RUN apt-get update && apt-get install -y libminiupnpc-dev libzmq3-dev libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools libprotobuf-dev protobuf-compiler libqrencode-dev
-
+# Checkout current release tag and create installation directory
 WORKDIR /bitcoin
+RUN git checkout v${BITCOIN_CORE_VER} && mkdir -p /bitcoin/bitcoin-${BITCOIN_CORE_VER}
 
-RUN git checkout v${BTCVERSION} && mkdir -p /bitcoin/bitcoin-${BTCVERSION}
-
+# Build dependencies for the current arch+OS
 WORKDIR /bitcoin/depends
+RUN make
+ENV CONF_PREFIX=/bitcoin/depends/x86_64-pc-linux-gnu
 
+# Build Bitcoin Core
+WORKDIR /bitcoin
+RUN ./autogen.sh
+RUN ./configure --with-gui \
+	--host=x86_64-pc-linux-gnu \
+	--prefix=${CONF_PREFIX} \
+	CPPFLAGS="-I${BDB_PREFIX}/include/ -O2" \
+	LDFLAGS="-L${BDB_PREFIX}/lib/"
 RUN make
 
-WORKDIR /bitcoin
+# Install Bitcoin Core
+RUN make install DESTDIR=/bitcoin/bitcoin-${BITCOIN_CORE_VER}
+RUN mv /bitcoin/bitcoin-${BITCOIN_CORE_VER}${CONF_PREFIX} /bitcoin-${BITCOIN_CORE_VER}
+RUN strip /bitcoin-${BITCOIN_CORE_VER}/bin/*
+RUN rm -rf /bitcoin-${BITCOIN_CORE_VER}/lib/pkgconfig
+RUN find /bitcoin-${BITCOIN_CORE_VER} -name "lib*.la" -delete
+RUN find /bitcoin-${BITCOIN_CORE_VER} -name "lib*.a" -delete
 
-RUN ./autogen.sh
-
-RUN ./configure CPPFLAGS="-I${BDB_PREFIX}/include/ -O2" LDFLAGS="-L${BDB_PREFIX}/lib/ -static-libstdc++" --with-gui --prefix=${BTCPREFIX} --disable-ccache --disable-maintainer-mode --disable-dependency-tracking --enable-glibc-back-compat --enable-reduce-exports --disable-bench --disable-gui-tests --enable-static
-
-RUN make 
-
-RUN make install DESTDIR=/bitcoin/bitcoin-${BTCVERSION}
-
-RUN mv /bitcoin/bitcoin-${BTCVERSION}${BTCPREFIX} /bitcoin-${BTCVERSION} && strip /bitcoin-${BTCVERSION}/bin/* && rm -rf /bitcoin-${BTCVERSION}/lib/pkgconfig && find /bitcoin-${BTCVERSION} -name "lib*.la" -delete && find /bitcoin-${BTCVERSION} -name "lib*.a" -delete 
-
+# Tarball Bitcoin Core
 WORKDIR /
-
-RUN tar cvf bitcoin-${BTCVERSION}.tar bitcoin-${BTCVERSION} 
+RUN tar -zcvf bitcoin-${BITCOIN_CORE_VER}-btcweekend.tar.gz bitcoin-${BITCOIN_CORE_VER}
